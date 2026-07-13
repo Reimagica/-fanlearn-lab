@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+/* ===== 主题变量：深色（默认） ===== */
+:root {
+  color-scheme: dark;
+  --bg-base: #06060a;
+  --bg-surface: #0f0f17;
+  --bg-surface-2: #16161f;
+  --bd-base: #1e1e2e;
+  --fg-strong: #f1f5f9;
+  --fg-base: #e2e8f0;
+  --fg-muted: #94a3b8;
+  --fg-faint: #64748b;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-strong: rgba(255, 255, 255, 0.12);
+}
+
+/* ===== 主题变量：浅色 ===== */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-base: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #f1f5f9;
+  --bd-base: #e2e8f0;
+  --fg-strong: #0f172a;
+  --fg-base: #1e293b;
+  --fg-muted: #475569;
+  --fg-faint: #94a3b8;
+  --overlay: rgba(15, 23, 42, 0.4);
+  --hairline: rgba(15, 23, 42, 0.08);
+  --hairline-strong: rgba(15, 23, 42, 0.12);
+}
+
+/* ===== 映射到 Tailwind 语义类 ===== */
+@theme inline {
+  --color-background: var(--bg-base);
+  --color-surface: var(--bg-surface);
+  --color-surface-2: var(--bg-surface-2);
+  --color-border: var(--bd-base);
+  --color-primary: #6366f1;
+  --color-primary-light: #818cf8;
+  --color-accent: #22d3ee;
+  --color-text: var(--fg-base);
+  --color-text-muted: var(--fg-muted);
+  --color-text-strong: var(--fg-strong);
+  --color-text-faint: var(--fg-faint);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+  --color-overlay: var(--overlay);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--fg-base);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* hex grid clip path */
+.hex-clip {
+  clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+}
+
+/* custom scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb { background: var(--bd-base); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #6366f1; }
+
+/* selection */
+::selection { background: #6366f122; color: #818cf8; }
+
+/* gradient text utility */
+.gradient-text {
+  background: linear-gradient(135deg, #818cf8, #22d3ee);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* 主题切换防闪烁：在 hydration 前隐藏主题不一致的内容 */
+.theme-transition * {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease !important;
+}
