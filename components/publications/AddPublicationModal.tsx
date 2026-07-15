@@ -176,7 +176,6 @@ export default function AddPublicationModal({ open, onClose }: Props) {
               <div className="flex items-center gap-2">
                 <Plus size={18} className="text-indigo-400" />
                 <h2 className="text-base font-semibold text-text-strong">添加论文</h2>
-                <span className="rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-400">中英文兼容</span>
               </div>
               <button
                 onClick={handleClose}
@@ -212,7 +211,7 @@ export default function AddPublicationModal({ open, onClose }: Props) {
                 </button>
               </div>
               <p className="mt-2 text-xs text-text-faint">
-                输入 DOI 可精确匹配；标题查询会返回最相关结果，未收录的中文成果可手动录入
+                通过 Semantic Scholar 检索。中文期刊、知网论文及无 DOI 的成果请切换到「手动录入」
               </p>
             </div>}
 

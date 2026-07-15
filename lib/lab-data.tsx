@@ -38,7 +38,7 @@ const REVIEWS_KEY = 'fl_review_queue'
 const MEMBER_DATA_VERSION_KEY = 'fl_member_data_version'
 const PUBLICATION_DATA_VERSION_KEY = 'fl_publication_data_version'
 const NEWS_DATA_VERSION_KEY = 'fl_news_data_version'
-const CONTENT_DATA_VERSION = '2026-07-13-news-harness-v4'
+const CONTENT_DATA_VERSION = '2026-07-14-members-v6'
 const MEMBER_DATA_VERSION = CONTENT_DATA_VERSION
 const SEEDED_MEMBER_SLUGS = new Set([
   'ma-junyang',
@@ -48,9 +48,11 @@ const SEEDED_MEMBER_SLUGS = new Set([
   'member-d',
   'member-e',
   'member-f',
-  'li-xinyu',
   'ma-ling',
+  'xu-jiaqi',
+  'li-zijian',
 ])
+const REMOVED_MEMBER_SLUGS = new Set(['li-xinyu'])
 
 function readStored<T>(key: string, fallback: T): T {
   if (typeof window === 'undefined') return fallback
@@ -72,11 +74,16 @@ function migrateMember(member: Member): Member {
       ? '毕业生'
       : '研究成员'
 
+  const avatarUrl = legacy.avatarUrl?.startsWith('https://api.dicebear.com/')
+    ? '/default-avatar.png'
+    : legacy.avatarUrl
+
   return {
     ...legacy,
     category,
     title: legacy.title || defaultTitle,
     isAdmin: legacy.isAdmin ?? legacy.role === 'pi',
+    avatarUrl,
   }
 }
 
@@ -116,9 +123,10 @@ function readMembersWithMigrations(): Member[] {
       migrated.push(seedMember)
     }
   }
-  localStorage.setItem(MEMBERS_KEY, JSON.stringify(migrated))
+  const cleaned = migrated.filter((member) => !REMOVED_MEMBER_SLUGS.has(member.slug))
+  localStorage.setItem(MEMBERS_KEY, JSON.stringify(cleaned))
   localStorage.setItem(MEMBER_DATA_VERSION_KEY, MEMBER_DATA_VERSION)
-  return migrated
+  return cleaned
 }
 
 function readPublicationsWithMigrations(): Publication[] {
@@ -128,9 +136,8 @@ function readPublicationsWithMigrations(): Publication[] {
   }
 
   const seeded = MOCK_PUBLICATIONS.filter((paper) => paper.id.startsWith('real_'))
-  const seededIds = new Set(seeded.map((paper) => paper.id))
   const migrated = [
-    ...publications.filter((paper) => !seededIds.has(paper.id)),
+    ...publications.filter((paper) => !paper.id.startsWith('real_')),
     ...seeded,
   ]
   localStorage.setItem(PUBLICATIONS_KEY, JSON.stringify(migrated))

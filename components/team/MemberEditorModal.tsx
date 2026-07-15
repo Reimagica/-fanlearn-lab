@@ -19,7 +19,7 @@ const EMPTY_MEMBER: Member = {
   nameEn: '',
   category: 'researcher',
   title: '',
-  avatarUrl: 'https://api.dicebear.com/9.x/avataaars/svg?seed=new-member',
+  avatarUrl: '/default-avatar.png',
   bio: '',
   researchInterests: [],
   email: '',

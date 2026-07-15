@@ -3,7 +3,7 @@
 import { useChat } from 'ai/react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Send, Bot, User, Loader2, Sparkles, RotateCcw, ChevronLeft, Paperclip, FileText, X } from 'lucide-react'
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 
 const SUGGESTIONS = [
@@ -22,10 +22,17 @@ export default function ChatPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [attachments, setAttachments] = useState<Array<{ name: string; type: string; size: number; content: string }>>([])
   const [fileError, setFileError] = useState('')
+  const hasMessages = messages.length > 0
+
+  const scrollToBottom = useCallback(() => {
+    const el = bottomRef.current
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    if (hasMessages) scrollToBottom()
+  }, [hasMessages, scrollToBottom])
 
   const handleSend = (event: { preventDefault?: () => void }) => {
     event.preventDefault?.()
@@ -60,7 +67,7 @@ export default function ChatPanel() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-64px)] flex-col pt-16">
+    <div className="flex h-screen flex-col pt-16">
       {/* Header */}
       <div className="border-b border-border bg-surface px-4 py-4 sm:px-6">
         <div className="mx-auto flex max-w-3xl items-center justify-between">
@@ -78,8 +85,7 @@ export default function ChatPanel() {
                 <Bot size={16} className="text-indigo-400" />
               </div>
               <div>
-                <h1 className="text-sm font-semibold text-text-strong">LabMind AI 助手</h1>
-                <p className="text-xs text-text-muted">回答问题 · 检索信息 · 指引内容提交</p>
+                <h1 className="text-sm font-semibold text-text-strong">AI 助手</h1>
               </div>
             </div>
           </div>
@@ -144,7 +150,7 @@ export default function ChatPanel() {
                   className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs ${
                     message.role === 'user'
                       ? 'bg-indigo-500/20 ring-1 ring-indigo-500/30'
-                      : 'bg-surface-2 ring-1 ring-white/10'
+                      : 'bg-surface-2 ring-1 ring-border'
                   }`}
                 >
                   {message.role === 'user' ? (
@@ -210,7 +216,7 @@ export default function ChatPanel() {
             onKeyDown={handleKeyDown}
             placeholder="输入消息，或上传参考文件…"
             rows={1}
-            className="flex-1 resize-none rounded-xl border border-border bg-surface-2 px-4 py-3 text-sm text-text-strong placeholder-slate-600 outline-none transition-all focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30"
+            className="flex-1 resize-none rounded-xl border border-border bg-surface-2 px-4 py-3 text-sm text-text-strong outline-none placeholder:text-text-faint transition-all focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30"
             style={{ maxHeight: '120px', overflowY: 'auto' }}
           />
           <button

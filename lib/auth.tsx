@@ -34,7 +34,8 @@ const DEFAULT_ACCOUNTS: AccountRecord[] = [
   { username: 'memberd', password: 'member123', name: '成员D', memberSlug: 'member-d', isAdmin: false },
   { username: 'membere', password: 'member123', name: '成员E', memberSlug: 'member-e', isAdmin: false },
   { username: 'memberf', password: 'member123', name: '成员F', memberSlug: 'member-f', isAdmin: false },
-  { username: 'lixy', password: 'member123', name: '李新宇', memberSlug: 'li-xinyu', isAdmin: false },
+  { username: 'xujq', password: 'member123', name: '许家奇', memberSlug: 'xu-jiaqi', isAdmin: false },
+  { username: 'lizj', password: 'member123', name: '李子健', memberSlug: 'li-zijian', isAdmin: false },
   { username: 'maling', password: 'member123', name: '马玲', memberSlug: 'ma-ling', isAdmin: false },
   { username: 'tanglz', password: 'member123', name: '唐陆禛', memberSlug: 'tang-luzhen', isAdmin: false },
 ]

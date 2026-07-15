@@ -39,8 +39,8 @@ export default function StatsCounter() {
   const { members, publications } = useLabData()
   const published = publications.filter((paper) => paper.status === 'published')
   const stats: StatItem[] = [
-    { label: '发表论文', value: published.length },
     { label: '团队成员', value: members.length },
+    { label: '发表论文', value: published.length },
     {
       label: '总引用次数',
       value: published.reduce((total, paper) => total + Math.max(0, paper.citationCount || 0), 0),
