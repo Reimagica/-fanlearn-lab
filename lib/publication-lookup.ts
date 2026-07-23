@@ -77,22 +77,13 @@ function buildSearchQueries(clues: LookupClues) {
 }
 
 function buildSourceRequests(query: string, clues: LookupClues): Array<Promise<LookupCandidate[]>> {
-  const hasChinese = clues.hasChinese || containsCjk(query) || clues.sourceHints.cnki || clues.sourceHints.wanfang
-  const preferBibliographic = hasChinese || clues.sourceHints.arxiv || clues.sourceHints.isbn || clues.sourceHints.cnki || clues.sourceHints.wanfang
-  const shouldQueryDblp = !hasChinese && !clues.sourceHints.arxiv && !clues.sourceHints.isbn && /[a-zA-Z]/.test(query)
   const authorHint = clues.authorHints.join(' ').trim()
 
-  return preferBibliographic
-    ? [
-        fetchCrossrefCandidates(query, authorHint),
-        fetchSemanticScholarCandidates(query),
-        shouldQueryDblp ? fetchDblpCandidates(query) : Promise.resolve([]),
-      ]
-    : [
-        fetchSemanticScholarCandidates(query),
-        fetchCrossrefCandidates(query, authorHint),
-        shouldQueryDblp ? fetchDblpCandidates(query) : Promise.resolve([]),
-      ]
+  return [
+    fetchSemanticScholarCandidates(query),
+    fetchCrossrefCandidates(query, authorHint),
+    fetchDblpCandidates(query),
+  ]
 }
 
 async function fetchSemanticScholarCandidates(query: string): Promise<LookupCandidate[]> {
@@ -124,13 +115,6 @@ interface LookupClues {
   searchText: string
   title?: string
   authorHints: string[]
-  hasChinese: boolean
-  sourceHints: {
-    arxiv: boolean
-    isbn: boolean
-    cnki: boolean
-    wanfang: boolean
-  }
 }
 
 function parseLookupClues(rawQuery: string, fallbackAuthor?: string): LookupClues {
@@ -147,20 +131,12 @@ function parseLookupClues(rawQuery: string, fallbackAuthor?: string): LookupClue
     : fallbackAuthorText
       ? [fallbackAuthorText]
       : []
-  const sourceHints = {
-    arxiv: /\barxiv\b|arxiv:/i.test(normalized),
-    isbn: /\bisbn\b/i.test(normalized),
-    cnki: /cnki|知网|kns\.cnki/i.test(normalized),
-    wanfang: /wanfang|万方/i.test(normalized),
-  }
 
   return {
     normalized,
     searchText: buildSearchText(normalized, title, authorHints),
     title,
     authorHints,
-    hasChinese: containsCjk(normalized) || containsCjk(title ?? ''),
-    sourceHints,
   }
 }
 
@@ -186,8 +162,7 @@ function buildSearchText(
   const fallback = stripLookupNoise(raw)
   const searchText = combined || fallback
 
-  // 如果用户输入里混有 arXiv/ISBN/CNKI/万方等标记，把它们当作噪声去掉，
-  // 但保留标题与作者，作为检索辅助线索。
+  // 只保留标题与作者作为检索关键词，其他说明性标记一律视为噪声。
   return stripLookupNoise(searchText || fallback || raw)
     .replace(/\s+/g, ' ')
     .trim()
@@ -364,7 +339,6 @@ function scorePublication(paper: Publication, clues: LookupClues) {
   if (paper.arxivId) score += 4
   if (paper.pdfUrl) score += 2
   if (paper.abstract) score += Math.min(8, Math.floor(paper.abstract.length / 160))
-  if (clues.hasChinese && containsCjk(paper.title)) score += 6
 
   switch (paper.source) {
     case 'manual':
@@ -437,9 +411,7 @@ function normalizeConfidence(
   if (matchedFields.has('doi')) confidence += 0.1
   if (matchedFields.has('title')) confidence += 0.08
   if (matchedFields.has('authors')) confidence += 0.06
-  if (paper.doi && clues.sourceHints.arxiv) confidence += 0.02
   if (paperAuthors.length === 0) confidence -= 0.08
-  if (clues.hasChinese && containsCjk(paper.title)) confidence += 0.04
   return Math.max(0.05, Math.min(0.99, Number(confidence.toFixed(2))))
 }
 
@@ -778,10 +750,6 @@ function makeStableId(source: string, value: string) {
     hash = ((hash << 5) + hash) + value.charCodeAt(index)
   }
   return `${source}_${(hash >>> 0).toString(36)}`
-}
-
-function containsCjk(value: string) {
-  return /[\u3400-\u9fff]/.test(value)
 }
 
 function compactCandidates(items: Array<LookupCandidate | null | undefined>) {

@@ -11,7 +11,7 @@ const AGENT_NAME = 'research' as const
 /**
  * 论文元数据查询端点
  * GET /api/publications/lookup?query=...&doi=...&author=...
- * 输入 DOI 或自然语言标题/作者信息，调用多源学术检索返回候选论文结果；
+ * 输入标题、作者或 DOI，调用多源学术检索返回候选论文结果；
  * author 可作为登录用户姓名的弱线索，在未明确提供作者时辅助排序
  */
 export async function GET(req: Request) {
@@ -24,7 +24,7 @@ export async function GET(req: Request) {
 
   if (!doi && !query) {
     return Response.json(
-      { error: '需提供 doi 或 query 参数' },
+      { error: '需提供 doi 或 query（标题/作者）参数' },
       { status: 400 },
     )
   }

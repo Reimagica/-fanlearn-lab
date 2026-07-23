@@ -205,7 +205,7 @@ export default function AddPublicationModal({ open, onClose }: Props) {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="输入论文标题、作者信息或 DOI"
+                  placeholder="输入论文标题、作者或 DOI"
                   className="w-full rounded-lg border border-border bg-surface-2 py-2.5 pl-10 pr-24 text-sm text-text-strong outline-none placeholder:text-text-faint focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-all"
                 />
                 <button
@@ -218,7 +218,7 @@ export default function AddPublicationModal({ open, onClose }: Props) {
                 </button>
               </div>
               <p className="mt-2 text-xs text-text-faint">
-                先用标题、你当前登录姓名（若你没有写作者）和其他线索做候选匹配，再结合 Semantic Scholar、Crossref 和 DBLP 补全信息。若没有 DOI，也可以先试自动查询；未命中再切换到「手动录入」
+                只需要输入论文标题、作者或 DOI，系统会先用这三类信息去公开学术数据库里找候选，再返回给你人工确认。若没有命中，再切换到「手动录入」
               </p>
             </div>}
 
