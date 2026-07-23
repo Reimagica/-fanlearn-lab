@@ -2,10 +2,10 @@
 
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, X, Loader2, Check, FileText, ExternalLink, Plus, PenLine } from 'lucide-react'
+import { Search, X, Loader2, Check, FileText, ExternalLink, Plus, PenLine, Trash2 } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
 import { useLabData } from '@/lib/lab-data'
-import type { Publication, PublicationLookupCandidate, PublicationType } from '@/types'
+import type { Publication, PublicationLookupCandidate, PublicationLookupConditionType, PublicationType } from '@/types'
 
 interface Props {
   open: boolean
@@ -26,6 +26,12 @@ interface ManualDraft {
   tags: string
 }
 
+interface LookupConditionDraft {
+  id: string
+  type: PublicationLookupConditionType
+  value: string
+}
+
 const EMPTY_MANUAL_DRAFT: ManualDraft = {
   title: '',
   authors: '',
@@ -40,15 +46,44 @@ const EMPTY_MANUAL_DRAFT: ManualDraft = {
   tags: '',
 }
 
+const MAX_LOOKUP_CONDITIONS = 3
+const MAX_AUTHOR_CONDITIONS = 3
+
+const CONDITION_OPTIONS: Array<{
+  value: PublicationLookupConditionType
+  label: string
+  placeholder: string
+  helper: string
+}> = [
+  { value: 'title', label: '标题', placeholder: '输入论文标题', helper: '标题最多 1 条' },
+  { value: 'author', label: '作者', placeholder: '输入作者姓名', helper: '作者最多 3 条' },
+  { value: 'doi', label: 'DOI', placeholder: '输入 DOI 或 DOI 链接', helper: 'DOI 最多 1 条' },
+]
+
 function normalizeDoi(value: string) {
   return value.trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '').replace(/^doi:\s*/i, '')
+}
+
+function createLookupCondition(type: PublicationLookupConditionType = 'title', value = ''): LookupConditionDraft {
+  return {
+    id: `cond_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    type,
+    value,
+  }
+}
+
+function countConditionTypes(conditions: LookupConditionDraft[]) {
+  return conditions.reduce((acc, condition) => {
+    acc[condition.type] += 1
+    return acc
+  }, { title: 0, author: 0, doi: 0 })
 }
 
 export default function AddPublicationModal({ open, onClose }: Props) {
   const { user } = useAuth()
   const { submitPublication } = useLabData()
   const [mode, setMode] = useState<'lookup' | 'manual'>('lookup')
-  const [input, setInput] = useState('')
+  const [conditions, setConditions] = useState<LookupConditionDraft[]>([createLookupCondition('title')])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [results, setResults] = useState<PublicationLookupCandidate[]>([])
@@ -60,27 +95,87 @@ export default function AddPublicationModal({ open, onClose }: Props) {
     setError('')
     setManualSubmitted(false)
     setManual(EMPTY_MANUAL_DRAFT)
+    setConditions([createLookupCondition('title')])
+    setResults([])
     onClose()
   }
 
-  const isDoi = (s: string) => /^10\.\d{4,9}\//.test(normalizeDoi(s))
+  const updateCondition = (id: string, updates: Partial<LookupConditionDraft>) => {
+    setConditions((current) => current.map((item) => (item.id === id ? { ...item, ...updates } : item)))
+    setError('')
+  }
+
+  const removeCondition = (id: string) => {
+    setConditions((current) => {
+      if (current.length <= 1) return [createLookupCondition('title')]
+      return current.filter((item) => item.id !== id)
+    })
+    setError('')
+  }
+
+  const addCondition = () => {
+    setConditions((current) => {
+      if (current.length >= MAX_LOOKUP_CONDITIONS) return current
+      const counts = countConditionTypes(current)
+      const nextType: PublicationLookupConditionType = counts.title === 0 ? 'title' : counts.author < MAX_AUTHOR_CONDITIONS ? 'author' : 'doi'
+      return [...current, createLookupCondition(nextType)]
+    })
+    setError('')
+  }
+
+  const canUseType = (candidate: PublicationLookupConditionType, currentId: string) => {
+    const counts = countConditionTypes(conditions)
+    const current = conditions.find((item) => item.id === currentId)
+    if (current?.type === candidate) {
+      return true
+    }
+    if (candidate === 'title') return counts.title < 1
+    if (candidate === 'doi') return counts.doi < 1
+    return counts.author < MAX_AUTHOR_CONDITIONS
+  }
 
   const handleSearch = async () => {
-    const q = input.trim()
-    if (!q) return
+    const trimmed = conditions
+      .map((condition) => ({ ...condition, value: condition.value.trim() }))
+      .filter((condition) => condition.value.length > 0)
+
+    if (trimmed.length === 0) {
+      setError('请至少填写一条检索条件')
+      return
+    }
+
+    const counts = countConditionTypes(trimmed)
+    if (trimmed.length > MAX_LOOKUP_CONDITIONS) {
+      setError('最多只能设置 3 个检索条件')
+      return
+    }
+    if (counts.title > 1) {
+      setError('标题条件最多只能填写 1 条')
+      return
+    }
+    if (counts.doi > 1) {
+      setError('DOI 条件最多只能填写 1 条')
+      return
+    }
+    if (counts.author > MAX_AUTHOR_CONDITIONS) {
+      setError('作者条件最多只能填写 3 条')
+      return
+    }
+
     setLoading(true)
     setError('')
     setResults([])
     setAddedIds(new Set())
     try {
       const params = new URLSearchParams()
-      if (isDoi(q)) {
-        params.set('doi', normalizeDoi(q))
-      } else {
-        params.set('query', q)
-      }
-      if (user?.name) {
-        params.set('author', user.name)
+      for (const condition of trimmed) {
+        if (condition.type === 'title') {
+          params.set('title', condition.value)
+        } else if (condition.type === 'doi') {
+          params.set('doi', normalizeDoi(condition.value))
+        } else {
+          params.append('author', condition.value)
+        }
       }
       const resp = await fetch(`/api/publications/lookup?${params}`)
       if (!resp.ok) {
@@ -91,7 +186,7 @@ export default function AddPublicationModal({ open, onClose }: Props) {
       const candidates = data.candidates ?? []
       setResults(candidates)
       if (candidates.length === 0) {
-        setError('未找到匹配论文，可换关键词重试，或切换到“手动录入”')
+        setError('未找到匹配论文，可调整标题、作者或 DOI 条件后重试，或切换到“手动录入”')
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : '查询失败')
@@ -158,6 +253,8 @@ export default function AddPublicationModal({ open, onClose }: Props) {
     }
   }
 
+  const counts = countConditionTypes(conditions)
+
   if (!user) return null
 
   return (
@@ -197,30 +294,95 @@ export default function AddPublicationModal({ open, onClose }: Props) {
               <button onClick={() => { setMode('manual'); setError('') }} className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs transition-colors ${mode === 'manual' ? 'bg-indigo-600 text-white' : 'text-text-muted hover:bg-surface-2'}`}><PenLine size={13} /> 手动录入</button>
             </div>
 
-            {mode === 'lookup' && <div className="border-b border-border px-6 py-4">
-              <div className="relative">
-                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="输入论文标题、作者或 DOI"
-                  className="w-full rounded-lg border border-border bg-surface-2 py-2.5 pl-10 pr-24 text-sm text-text-strong outline-none placeholder:text-text-faint focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-all"
-                />
-                <button
-                  onClick={handleSearch}
-                  disabled={loading || !input.trim()}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-all hover:bg-indigo-500 disabled:opacity-50"
-                >
-                  {loading ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
-                  查询
-                </button>
+            {mode === 'lookup' && (
+              <div className="border-b border-border px-6 py-4">
+                <div className="space-y-3">
+                  {conditions.map((condition, index) => {
+                    const option = CONDITION_OPTIONS.find((item) => item.value === condition.type) ?? CONDITION_OPTIONS[0]
+                    return (
+                      <div key={condition.id} className="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)_42px]">
+                        <label className="block text-xs text-text-muted">
+                          条件 {index + 1}
+                          <select
+                            value={condition.type}
+                            onChange={(event) => updateCondition(condition.id, { type: event.target.value as PublicationLookupConditionType })}
+                            className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2.5 text-sm text-text-strong outline-none focus:border-indigo-500/50"
+                          >
+                            {CONDITION_OPTIONS.map((item) => (
+                              <option
+                                key={item.value}
+                                value={item.value}
+                                disabled={!canUseType(item.value, condition.id)}
+                              >
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block text-xs text-text-muted">
+                          {option.label}
+                          <div className="relative mt-1.5">
+                            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted" />
+                            <input
+                              type="text"
+                              value={condition.value}
+                              onChange={(event) => updateCondition(condition.id, { value: event.target.value })}
+                              onKeyDown={handleKeyDown}
+                              placeholder={option.placeholder}
+                              className="w-full rounded-lg border border-border bg-surface-2 py-2.5 pl-10 pr-3 text-sm text-text-strong outline-none placeholder:text-text-faint focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-all"
+                            />
+                          </div>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => removeCondition(condition.id)}
+                          disabled={conditions.length === 1}
+                          className="mt-6 flex h-10 w-10 items-center justify-center rounded-lg border border-border text-text-muted transition-colors hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40"
+                          aria-label="删除条件"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-text-faint">
+                    <span>条件之间默认采用 AND 关系</span>
+                    <span>·</span>
+                    <span>标题 {counts.title}/1</span>
+                    <span>作者 {counts.author}/3</span>
+                    <span>DOI {counts.doi}/1</span>
+                    <span>·</span>
+                    <span>最多 3 条</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addCondition}
+                    disabled={conditions.length >= MAX_LOOKUP_CONDITIONS}
+                    className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-text-muted transition-colors hover:border-indigo-500/30 hover:text-indigo-400 disabled:opacity-40"
+                  >
+                    <Plus size={13} /> 添加条件
+                  </button>
+                </div>
+
+                <div className="mt-3 flex justify-end">
+                  <button
+                    onClick={handleSearch}
+                    disabled={loading || conditions.every((condition) => !condition.value.trim())}
+                    className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium text-white transition-all hover:bg-indigo-500 disabled:opacity-50"
+                  >
+                    {loading ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
+                    查询
+                  </button>
+                </div>
+
+                <p className="mt-2 text-xs text-text-faint">
+                  你可以先填标题，再补作者或 DOI；多个条件会一起约束检索结果，更接近知网 / 万方那样的组合检索。若没有命中，再切换到「手动录入」
+                </p>
               </div>
-              <p className="mt-2 text-xs text-text-faint">
-                只需要输入论文标题、作者或 DOI，系统会先用这三类信息去公开学术数据库里找候选，再返回给你人工确认。若没有命中，再切换到「手动录入」
-              </p>
-            </div>}
+            )}
 
             {/* Error */}
             {error && (

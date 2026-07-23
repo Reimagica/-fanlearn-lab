@@ -4,12 +4,15 @@ import { fetchPaperByDoi, searchPaper, type SSPaper } from '@/lib/tools/fetch-se
 import type {
   Publication,
   PublicationLookupCandidate,
+  PublicationLookupCondition,
   PublicationLookupField,
   PublicationLookupSource,
   PublicationType,
 } from '@/types'
 
 const RESULT_LIMIT = 5
+const MAX_CONDITIONS = 3
+const MAX_AUTHOR_CONDITIONS = 3
 
 type LookupSource = 'semantic_scholar' | 'crossref' | 'dblp'
 
@@ -19,24 +22,52 @@ interface LookupCandidate {
 }
 
 export interface PublicationLookupInput {
+  title?: string
   doi?: string
+  authors?: string[]
+  author?: string | string[]
   query?: string
-  author?: string
+}
+
+export class PublicationLookupInputError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PublicationLookupInputError'
+  }
+}
+
+interface LookupPlan {
+  normalized: string
+  searchText: string
+  title?: string
+  doi?: string
+  authors: string[]
+  conditions: PublicationLookupCondition[]
+  searchTerms: string[]
+}
+
+interface SearchProfile {
+  term: string
+  title?: string
+  authors: string[]
+  mode: 'combined' | 'title' | 'author'
+}
+
+interface ConditionEvaluation {
+  matchedFields: Set<PublicationLookupField>
+  matchedConditions: PublicationLookupCondition[]
+  score: number
+  allMatched: boolean
 }
 
 export async function lookupPublicationMetadata(input: PublicationLookupInput): Promise<PublicationLookupCandidate[]> {
-  const normalizedDoi = normalizeDoi(input.doi ?? '')
-  const rawQuery = normalizeLookupText(input.query ?? input.doi ?? '')
-  const clues = parseLookupClues(rawQuery, input.author)
+  const plan = normalizeLookupPlan(input)
+  if (plan.conditions.length === 0) return []
 
-  if (!normalizedDoi && !rawQuery) {
-    return []
-  }
-
-  if (normalizedDoi) {
+  if (plan.doi) {
     const [ssPaper, crossrefPaper] = await Promise.all([
-      fetchPaperByDoi(normalizedDoi).catch(() => null),
-      fetchCrossrefWorkByDoi(normalizedDoi).catch(() => null),
+      fetchPaperByDoi(plan.doi).catch(() => null),
+      fetchCrossrefWorkByDoi(plan.doi).catch(() => null),
     ])
 
     const exactCandidates = compactCandidates([
@@ -44,17 +75,19 @@ export async function lookupPublicationMetadata(input: PublicationLookupInput): 
       crossrefPaper ? { paper: normalizeCrossrefWork(crossrefPaper), source: 'crossref' as const } : null,
     ])
 
-    const mergedExact = mergeCandidates(exactCandidates, rawQuery, clues)
+    const mergedExact = mergeCandidates(exactCandidates, plan)
+      .filter((candidate) => matchesLookupPlan(candidate.paper, plan))
+
     if (mergedExact.length > 0) {
       return mergedExact.slice(0, RESULT_LIMIT)
     }
   }
 
-  const searchQueries = buildSearchQueries(clues)
+  const searchProfiles = buildSearchProfiles(plan)
   const allResults: LookupCandidate[] = []
 
-  for (const query of searchQueries) {
-    const sourceRequests = buildSourceRequests(query, clues)
+  for (const profile of searchProfiles) {
+    const sourceRequests = buildSourceRequests(profile, plan)
     const settled = await Promise.all(sourceRequests.map((request) => request.catch((error) => {
       console.error('[publication-lookup] source error:', error)
       return []
@@ -62,27 +95,150 @@ export async function lookupPublicationMetadata(input: PublicationLookupInput): 
     allResults.push(...settled.flat())
   }
 
-  return mergeCandidates(allResults, clues.searchText || rawQuery, clues)
+  return mergeCandidates(allResults, plan)
+    .filter((candidate) => matchesLookupPlan(candidate.paper, plan))
     .slice(0, RESULT_LIMIT)
 }
 
-function buildSearchQueries(clues: LookupClues) {
-  const queries = [
-    clues.searchText,
-    clues.title,
-    clues.normalized,
-  ].filter((value): value is string => Boolean(value && value.trim()))
+function normalizeLookupPlan(input: PublicationLookupInput): LookupPlan {
+  const explicitTitle = sanitizeQueryText(input.title ?? '')
+  const explicitDoi = normalizeDoi(input.doi ?? '')
+  const explicitAuthors = normalizeAuthorInputs(input.authors, input.author)
+  const legacyText = sanitizeQueryText(input.query ?? '')
 
-  return Array.from(new Set(queries.map((value) => normalizeLookupText(value)).filter(Boolean)))
+  let title = explicitTitle
+  let doi = explicitDoi
+  let authors = explicitAuthors
+
+  if (!title && !doi && authors.length === 0 && legacyText) {
+    const parsedDoi = extractDoiCandidate(legacyText)
+    const parsedTitle = firstNonEmpty(
+      extractLabeledField(legacyText, ['标题', '题目', '论文题目', 'title']),
+      extractQuotedTitle(legacyText),
+      extractCitationTitle(legacyText),
+    )
+    const parsedAuthors = extractExplicitAuthorHints(legacyText, parsedTitle)
+
+    if (parsedDoi) doi = parsedDoi
+    if (parsedTitle) title = parsedTitle
+    if (!title && !doi && parsedAuthors.length === 0) title = legacyText
+    authors = parsedAuthors
+  }
+
+  const conditions: PublicationLookupCondition[] = []
+  if (title) conditions.push({ type: 'title', value: title })
+  if (doi) conditions.push({ type: 'doi', value: doi })
+  for (const author of authors) conditions.push({ type: 'author', value: author })
+
+  if (conditions.length === 0) {
+    return {
+      normalized: '',
+      searchText: '',
+      title: undefined,
+      doi: undefined,
+      authors: [],
+      conditions: [],
+      searchTerms: [],
+    }
+  }
+
+  const titleCount = conditions.filter((condition) => condition.type === 'title').length
+  const doiCount = conditions.filter((condition) => condition.type === 'doi').length
+  const authorCount = conditions.filter((condition) => condition.type === 'author').length
+
+  if (titleCount > 1) throw new PublicationLookupInputError('标题条件最多只能填写 1 条')
+  if (doiCount > 1) throw new PublicationLookupInputError('DOI 条件最多只能填写 1 条')
+  if (authorCount > MAX_AUTHOR_CONDITIONS) throw new PublicationLookupInputError('作者条件最多只能填写 3 条')
+  if (conditions.length > MAX_CONDITIONS) throw new PublicationLookupInputError('最多只能设置 3 个检索条件')
+
+  const normalized = sanitizeQueryText([title, doi, ...authors].filter(Boolean).join(' '))
+  const searchText = buildSearchText(normalized || legacyText, title, authors)
+  const searchTerms = buildSearchTerms(title, authors, doi || legacyText)
+
+  return {
+    normalized,
+    searchText,
+    title,
+    doi,
+    authors,
+    conditions,
+    searchTerms,
+  }
 }
 
-function buildSourceRequests(query: string, clues: LookupClues): Array<Promise<LookupCandidate[]>> {
-  const authorHint = clues.authorHints.join(' ').trim()
+function normalizeAuthorInputs(authors?: string[], author?: string | string[]) {
+  const rawValues = [
+    ...(authors ?? []),
+    ...(Array.isArray(author) ? author : author ? [author] : []),
+  ]
 
+  const expanded = rawValues.flatMap((value) => splitAuthorTokens(sanitizeQueryText(value)))
+  return Array.from(new Set(expanded.filter((token) => isLikelyAuthorToken(token))))
+}
+
+function buildSearchTerms(title: string | undefined, authors: string[], fallback: string) {
+  const terms = new Set<string>()
+  const combined = [title, ...authors].filter(Boolean).join(' ').trim()
+
+  if (combined) terms.add(normalizeLookupText(combined))
+  if (title) terms.add(normalizeLookupText(title))
+  for (const author of authors) terms.add(normalizeLookupText(author))
+  if (!title && authors.length > 1) terms.add(normalizeLookupText(authors.join(' ')))
+  if (terms.size === 0 && fallback) terms.add(normalizeLookupText(fallback))
+  if (fallback) terms.add(normalizeLookupText(fallback))
+
+  return Array.from(terms).filter((term) => Boolean(term && term.trim()))
+}
+
+function buildSearchProfiles(plan: LookupPlan) {
+  const profiles: SearchProfile[] = []
+  const combined = [plan.title, ...plan.authors].filter(Boolean).join(' ').trim()
+
+  if (combined) {
+    profiles.push({ term: combined, title: plan.title, authors: plan.authors, mode: 'combined' })
+  }
+  if (plan.title) {
+    profiles.push({ term: plan.title, title: plan.title, authors: plan.authors, mode: 'title' })
+  }
+  if (plan.authors.length > 1) {
+    profiles.push({ term: plan.authors.join(' '), authors: plan.authors, mode: 'combined' })
+  }
+  for (const author of plan.authors) {
+    profiles.push({ term: author, authors: [author], mode: 'author' })
+  }
+
+  if (plan.doi) {
+    profiles.push({ term: plan.doi, title: plan.title, authors: plan.authors, mode: 'combined' })
+  }
+
+  if (profiles.length === 0 && plan.doi) {
+    profiles.push({ term: plan.doi, authors: [], mode: 'combined' })
+  }
+
+  return dedupeProfiles(profiles)
+}
+
+function dedupeProfiles(profiles: SearchProfile[]) {
+  const seen = new Set<string>()
+  const result: SearchProfile[] = []
+  for (const profile of profiles) {
+    const key = `${profile.mode}|${normalizeLookupKey(profile.term)}|${profile.authors.map((author) => normalizeLookupKey(author)).join('|')}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(profile)
+  }
+  return result
+}
+
+function buildSourceRequests(profile: SearchProfile, plan: LookupPlan): Array<Promise<LookupCandidate[]>> {
   return [
-    fetchSemanticScholarCandidates(query),
-    fetchCrossrefCandidates(query, authorHint),
-    fetchDblpCandidates(query),
+    fetchSemanticScholarCandidates(profile.term),
+    fetchCrossrefCandidates(profile.term, {
+      title: profile.title ?? plan.title,
+      authors: profile.authors.length > 0 ? profile.authors : plan.authors,
+      bibliographic: profile.term,
+    }),
+    fetchDblpCandidates(profile.term),
   ]
 }
 
@@ -94,8 +250,15 @@ async function fetchSemanticScholarCandidates(query: string): Promise<LookupCand
   }))
 }
 
-async function fetchCrossrefCandidates(query: string, authorHint = ''): Promise<LookupCandidate[]> {
-  const works = await searchCrossrefWorks(query, { author: authorHint })
+async function fetchCrossrefCandidates(
+  query: string,
+  options: { title?: string; authors?: string[]; bibliographic?: string },
+): Promise<LookupCandidate[]> {
+  const works = await searchCrossrefWorks(query, {
+    title: options.title,
+    authors: options.authors,
+    bibliographic: options.bibliographic,
+  })
   return works.map((work) => ({
     paper: normalizeCrossrefWork(work),
     source: 'crossref' as const,
@@ -110,62 +273,245 @@ async function fetchDblpCandidates(query: string): Promise<LookupCandidate[]> {
   }))
 }
 
-interface LookupClues {
-  normalized: string
-  searchText: string
-  title?: string
-  authorHints: string[]
+function matchesLookupPlan(paper: Publication, plan: LookupPlan) {
+  return plan.conditions.every((condition) => matchesLookupCondition(paper, condition))
 }
 
-function parseLookupClues(rawQuery: string, fallbackAuthor?: string): LookupClues {
-  const normalized = sanitizeQueryText(rawQuery)
-  const title = firstNonEmpty(
-    extractLabeledField(normalized, ['标题', '题目', '论文题目', 'title']),
-    extractQuotedTitle(normalized),
-    extractCitationTitle(normalized),
-  )
-  const explicitAuthorHints = extractExplicitAuthorHints(normalized, title)
-  const fallbackAuthorText = fallbackAuthor ? sanitizeQueryText(fallbackAuthor) : ''
-  const authorHints = explicitAuthorHints.length > 0
-    ? explicitAuthorHints
-    : fallbackAuthorText
-      ? [fallbackAuthorText]
-      : []
+function matchesLookupCondition(paper: Publication, condition: PublicationLookupCondition) {
+  if (condition.type === 'title') {
+    return matchesTitleCondition(paper.title, condition.value)
+  }
+  if (condition.type === 'author') {
+    return matchesAuthorCondition(paper.authors, condition.value)
+  }
+  return normalizeDoi(paper.doi ?? '') === normalizeDoi(condition.value)
+}
+
+function matchesTitleCondition(paperTitle: string, queryTitle: string) {
+  const titleKey = normalizeLookupKey(paperTitle)
+  const queryKey = normalizeLookupKey(queryTitle)
+  if (!titleKey || !queryKey) return false
+  if (titleKey === queryKey) return true
+  if (titleKey.includes(queryKey) || queryKey.includes(titleKey)) return true
+  return titleSimilarityScore(paperTitle, queryTitle) >= 12
+}
+
+function matchesAuthorCondition(authors: string[], queryAuthor: string) {
+  const queryKey = normalizeLookupKey(queryAuthor)
+  if (!queryKey) return false
+  return authors.some((author) => {
+    const authorKey = normalizeLookupKey(author)
+    return authorKey === queryKey || authorKey.includes(queryKey) || queryKey.includes(authorKey)
+  })
+}
+
+function evaluateLookupConditions(paper: Publication, plan: LookupPlan): ConditionEvaluation {
+  const matchedFields = new Set<PublicationLookupField>()
+  const matchedConditions: PublicationLookupCondition[] = []
+  let score = 0
+
+  for (const condition of plan.conditions) {
+    if (condition.type === 'title') {
+      const titleScore = scoreTitleCondition(paper.title, condition.value)
+      if (titleScore > 0) {
+        score += titleScore
+        matchedFields.add('title')
+        matchedConditions.push(condition)
+      }
+      continue
+    }
+
+    if (condition.type === 'author') {
+      const authorScore = scoreAuthorCondition(paper.authors, condition.value)
+      if (authorScore > 0) {
+        score += authorScore
+        matchedFields.add('authors')
+        matchedConditions.push(condition)
+      }
+      continue
+    }
+
+    const doiMatched = normalizeDoi(paper.doi ?? '') === normalizeDoi(condition.value)
+    if (doiMatched) {
+      score += 120
+      matchedFields.add('doi')
+      matchedConditions.push(condition)
+    }
+  }
+
+  const allMatched = matchedConditions.length === plan.conditions.length
+  return { matchedFields, matchedConditions, score, allMatched }
+}
+
+function scorePublication(paper: Publication, plan: LookupPlan) {
+  const evaluation = evaluateLookupConditions(paper, plan)
+  let score = evaluation.score
+
+  if (paper.doi) score += 8
+  if (paper.arxivId) score += 4
+  if (paper.pdfUrl) score += 2
+  if (paper.abstract) score += Math.min(8, Math.floor(paper.abstract.length / 160))
+
+  switch (paper.source) {
+    case 'manual':
+      score += 1
+      break
+    case 'agent':
+      score += 2
+      break
+    case 'auto_crawler':
+      score += 3
+      break
+  }
+
+  return { score, evaluation }
+}
+
+function scoreTitleCondition(paperTitle: string, queryTitle: string) {
+  const titleKey = normalizeLookupKey(paperTitle)
+  const queryKey = normalizeLookupKey(queryTitle)
+  if (!titleKey || !queryKey) return 0
+  if (titleKey === queryKey) return 120
+  if (titleKey.includes(queryKey) || queryKey.includes(titleKey)) return 90
+  const similarity = titleSimilarityScore(paperTitle, queryTitle)
+  return similarity >= 12 ? 50 + similarity : 0
+}
+
+function scoreAuthorCondition(authors: string[], queryAuthor: string) {
+  const queryKey = normalizeLookupKey(queryAuthor)
+  if (!queryKey) return 0
+  let best = 0
+  for (const author of authors) {
+    const authorKey = normalizeLookupKey(author)
+    if (!authorKey) continue
+    if (authorKey === queryKey) {
+      best = Math.max(best, 36)
+      continue
+    }
+    if (authorKey.includes(queryKey) || queryKey.includes(authorKey)) {
+      best = Math.max(best, 24)
+      continue
+    }
+    if (titleSimilarityScore(author, queryAuthor) >= 12) {
+      best = Math.max(best, 18)
+    }
+  }
+  return best
+}
+
+function mergeCandidates(candidates: LookupCandidate[], plan: LookupPlan): PublicationLookupCandidate[] {
+  const merged: Array<PublicationLookupCandidate & {
+    paper: Publication
+    source: PublicationLookupSource
+    score: number
+  }> = []
+  const doiIndex = new Map<string, number>()
+  const titleIndex = new Map<string, number>()
+  const queryKey = normalizeLookupKey(plan.searchText || plan.normalized || plan.title || plan.doi || '')
+
+  for (const candidate of candidates) {
+    const paper = candidate.paper
+    const doiKey = normalizeDoi(paper.doi ?? '')
+    const titleKey = normalizeLookupKey(paper.title)
+    const matchedIndex = (doiKey ? doiIndex.get(doiKey) : undefined)
+      ?? titleIndex.get(titleKey)
+    const { score, evaluation } = scorePublication(paper, plan)
+    const metadata = buildLookupCandidate(paper, candidate.source, plan, score, evaluation)
+
+    if (matchedIndex === undefined) {
+      const nextIndex = merged.length
+      merged.push({
+        ...metadata,
+        paper,
+        source: candidate.source,
+        score,
+      })
+      if (doiKey) doiIndex.set(doiKey, nextIndex)
+      titleIndex.set(titleKey, nextIndex)
+      continue
+    }
+
+    const existing = merged[matchedIndex]
+    const mergedPaper = mergePublication(existing.paper, paper, queryKey)
+    const mergedScore = Math.max(existing.score, score)
+    const preferredSource = score >= existing.score ? candidate.source : existing.source
+    const mergedEvaluation = evaluateLookupConditions(mergedPaper, plan)
+    merged[matchedIndex] = {
+      ...buildLookupCandidate(mergedPaper, preferredSource, plan, mergedScore, mergedEvaluation),
+      paper: mergedPaper,
+      source: preferredSource,
+      score: mergedScore,
+    }
+    if (doiKey) doiIndex.set(doiKey, matchedIndex)
+    titleIndex.set(titleKey, matchedIndex)
+  }
+
+  return merged
+    .map(({ paper, source, confidence, matchedFields, missingFields }) => ({
+      paper,
+      source,
+      confidence,
+      matchedFields,
+      missingFields,
+    }))
+    .sort((a, b) => b.confidence - a.confidence)
+}
+
+function buildLookupCandidate(
+  paper: Publication,
+  source: PublicationLookupSource,
+  plan: LookupPlan,
+  score: number,
+  evaluation: ConditionEvaluation,
+): Omit<PublicationLookupCandidate, 'paper'> {
+  const missingFields: PublicationLookupField[] = []
+  if (!paper.doi) missingFields.push('doi')
+  if (!paper.venue) missingFields.push('venue')
+  if (!paper.abstract) missingFields.push('abstract')
+  if (!paper.pdfUrl) missingFields.push('pdfUrl')
+  if (!paper.sourceUrl) missingFields.push('sourceUrl')
+  if (paper.authors.length === 0) missingFields.push('authors')
 
   return {
-    normalized,
-    searchText: buildSearchText(normalized, title, authorHints),
-    title,
-    authorHints,
+    source,
+    confidence: normalizeConfidence(score, evaluation, paper, plan),
+    matchedFields: Array.from(evaluation.matchedFields),
+    missingFields,
   }
 }
 
-function buildSearchText(
-  raw: string,
-  title: string | undefined,
-  authorHints: string[],
-) {
+function normalizeConfidence(score: number, evaluation: ConditionEvaluation, paper: Publication, plan: LookupPlan) {
+  let confidence = 0.1 + (score / 220)
+  if (evaluation.matchedFields.has('doi')) confidence += 0.15
+  if (evaluation.matchedFields.has('title')) confidence += 0.1
+  if (evaluation.matchedFields.has('authors')) confidence += 0.08
+  if (plan.conditions.length > 0) confidence += (evaluation.matchedConditions.length / plan.conditions.length) * 0.12
+  if (paper.authors.length === 0) confidence -= 0.08
+  return Math.max(0.05, Math.min(0.99, Number(confidence.toFixed(2))))
+}
+
+function buildSearchText(raw: string, title: string | undefined, authors: string[]) {
   const fragments: string[] = []
   const cleanTitle = title ? sanitizeQueryText(title) : ''
   if (cleanTitle) fragments.push(cleanTitle)
 
-  for (const author of authorHints.slice(0, 3)) {
+  for (const author of authors.slice(0, 3)) {
     const cleanAuthor = sanitizeQueryText(author)
     if (cleanAuthor && !fragments.includes(cleanAuthor)) fragments.push(cleanAuthor)
   }
 
-  if (fragments.length === 0) {
-    fragments.push(stripLookupNoise(raw))
-  }
+  if (fragments.length === 0) fragments.push(stripLookupNoise(raw))
 
   const combined = fragments.join(' ').replace(/\s+/g, ' ').trim()
   const fallback = stripLookupNoise(raw)
-  const searchText = combined || fallback
-
-  // 只保留标题与作者作为检索关键词，其他说明性标记一律视为噪声。
-  return stripLookupNoise(searchText || fallback || raw)
+  return stripLookupNoise(combined || fallback || raw)
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function extractDoiCandidate(text: string) {
+  const match = text.match(/\b10\.\d{4,9}\/[\w.()/:;-]+\b/i)
+  return match ? normalizeDoi(match[0]) : ''
 }
 
 function extractLabeledField(text: string, labels: string[]) {
@@ -227,7 +573,7 @@ function splitAuthorTokens(value: string) {
     .filter(Boolean)
     .filter((token) => isLikelyAuthorToken(token))
 
-  return Array.from(new Set(tokens)).slice(0, 4)
+  return Array.from(new Set(tokens))
 }
 
 function isLikelyAuthorToken(token: string) {
@@ -259,205 +605,6 @@ function escapeRegExp(value: string) {
 
 function firstNonEmpty(...values: Array<string | undefined>) {
   return values.map((value) => value?.trim()).find((value): value is string => Boolean(value))
-}
-
-function mergeCandidates(candidates: LookupCandidate[], query: string, clues: LookupClues): PublicationLookupCandidate[] {
-  const merged: Array<PublicationLookupCandidate & {
-    paper: Publication
-    source: PublicationLookupSource
-    score: number
-  }> = []
-  const doiIndex = new Map<string, number>()
-  const titleIndex = new Map<string, number>()
-  const queryKey = normalizeLookupKey(query)
-
-  for (const candidate of candidates) {
-    const paper = candidate.paper
-    const doiKey = normalizeDoi(paper.doi ?? '')
-    const titleKey = normalizeLookupKey(paper.title)
-    const matchedIndex = (doiKey ? doiIndex.get(doiKey) : undefined)
-      ?? titleIndex.get(titleKey)
-    const score = scorePublication(paper, clues)
-    const metadata = buildLookupCandidate(paper, candidate.source, clues, score)
-
-    if (matchedIndex === undefined) {
-      const nextIndex = merged.length
-      merged.push({
-        ...metadata,
-        paper,
-        source: candidate.source,
-        score,
-      })
-      if (doiKey) doiIndex.set(doiKey, nextIndex)
-      titleIndex.set(titleKey, nextIndex)
-      continue
-    }
-
-    const existing = merged[matchedIndex]
-    const mergedPaper = mergePublication(existing.paper, paper, queryKey)
-    const mergedScore = Math.max(existing.score, score)
-    const preferredSource = score >= existing.score ? candidate.source : existing.source
-    merged[matchedIndex] = {
-      ...buildLookupCandidate(mergedPaper, preferredSource, clues, mergedScore),
-      paper: mergedPaper,
-      source: preferredSource,
-      score: mergedScore,
-    }
-    if (doiKey) doiIndex.set(doiKey, matchedIndex)
-    titleIndex.set(titleKey, matchedIndex)
-  }
-
-  return merged
-    .map(({ paper, source, confidence, matchedFields, missingFields }) => ({
-      paper,
-      source,
-      confidence,
-      matchedFields,
-      missingFields,
-    }))
-    .sort((a, b) => b.confidence - a.confidence)
-}
-
-function scorePublication(paper: Publication, clues: LookupClues) {
-  const titleTarget = normalizeLookupKey(clues.title ?? clues.searchText ?? clues.normalized)
-  const paperTitle = normalizeLookupKey(paper.title)
-  const authorText = normalizeLookupKey(paper.authors.join(' '))
-
-  let score = 0
-
-  if (titleTarget) {
-    if (paperTitle === titleTarget) score += 120
-    else if (paperTitle.includes(titleTarget) || titleTarget.includes(paperTitle)) score += 90
-    else score += titleSimilarityScore(paper.title, clues.title ?? clues.searchText ?? clues.normalized)
-  }
-
-  if (clues.authorHints.length > 0) {
-    score += authorMatchScore(authorText, paper.authors, clues.authorHints)
-  }
-
-  if (paper.doi) score += 8
-  if (paper.arxivId) score += 4
-  if (paper.pdfUrl) score += 2
-  if (paper.abstract) score += Math.min(8, Math.floor(paper.abstract.length / 160))
-
-  switch (paper.source) {
-    case 'manual':
-      score += 1
-      break
-    case 'agent':
-      score += 2
-      break
-    case 'auto_crawler':
-      score += 3
-      break
-  }
-
-  return score
-}
-
-function buildLookupCandidate(
-  paper: Publication,
-  source: PublicationLookupSource,
-  clues: LookupClues,
-  score: number,
-): Omit<PublicationLookupCandidate, 'paper'> {
-  const matchedFields = new Set<PublicationLookupField>()
-  const targetTitle = normalizeLookupKey(clues.title ?? clues.searchText ?? clues.normalized)
-  const paperTitle = normalizeLookupKey(paper.title)
-  const authorHints = clues.authorHints.map((value) => normalizeLookupKey(value)).filter(Boolean)
-  const paperAuthors = paper.authors.map((value) => normalizeLookupKey(value))
-  const queryHasDoi = /\b10\.\d{4,9}\/[\w.()/:;-]+\b/i.test(clues.normalized) || /\bdoi\b/i.test(clues.normalized)
-
-  if (targetTitle && (paperTitle === targetTitle || paperTitle.includes(targetTitle) || targetTitle.includes(paperTitle) || titleSimilarityScore(paper.title, clues.title ?? clues.searchText ?? clues.normalized) > 0)) {
-    matchedFields.add('title')
-  }
-  if (authorHints.length > 0 && authorMatchScore(normalizeLookupKey(paper.authors.join(' ')), paper.authors, clues.authorHints) > 0) {
-    matchedFields.add('authors')
-  }
-  if (queryHasDoi && paper.doi) {
-    matchedFields.add('doi')
-  }
-  if (paper.venue && normalizeLookupKey(clues.searchText).includes(normalizeLookupKey(paper.venue))) {
-    matchedFields.add('venue')
-  }
-  if (paper.year && new RegExp(`\\b${paper.year}\\b`).test(clues.normalized)) {
-    matchedFields.add('year')
-  }
-
-  const missingFields: PublicationLookupField[] = []
-  if (!paper.doi) missingFields.push('doi')
-  if (!paper.venue) missingFields.push('venue')
-  if (!paper.abstract) missingFields.push('abstract')
-  if (!paper.pdfUrl) missingFields.push('pdfUrl')
-  if (!paper.sourceUrl) missingFields.push('sourceUrl')
-  if (paper.authors.length === 0) missingFields.push('authors')
-
-  return {
-    source,
-    confidence: normalizeConfidence(score, matchedFields, paper, clues, paperAuthors),
-    matchedFields: Array.from(matchedFields),
-    missingFields,
-  }
-}
-
-function normalizeConfidence(
-  score: number,
-  matchedFields: Set<PublicationLookupField>,
-  paper: Publication,
-  clues: LookupClues,
-  paperAuthors: string[],
-) {
-  let confidence = 0.15 + (score / 160)
-  if (matchedFields.has('doi')) confidence += 0.1
-  if (matchedFields.has('title')) confidence += 0.08
-  if (matchedFields.has('authors')) confidence += 0.06
-  if (paperAuthors.length === 0) confidence -= 0.08
-  return Math.max(0.05, Math.min(0.99, Number(confidence.toFixed(2))))
-}
-
-function titleSimilarityScore(title: string, query: string) {
-  const titleKey = normalizeLookupKey(title)
-  const queryKey = normalizeLookupKey(query)
-  if (!titleKey || !queryKey) return 0
-
-  if (titleKey.includes(queryKey) || queryKey.includes(titleKey)) {
-    return Math.min(80, Math.max(titleKey.length, queryKey.length))
-  }
-
-  const titleTokens = tokenizeForSimilarity(title)
-  const queryTokens = tokenizeForSimilarity(query)
-  if (titleTokens.length === 0 || queryTokens.length === 0) return 0
-
-  const titleSet = new Set(titleTokens)
-  let hits = 0
-  for (const token of queryTokens) {
-    if (titleSet.has(token)) hits += 1
-  }
-  return Math.min(30, Math.round((hits / queryTokens.length) * 30))
-}
-
-function authorMatchScore(authorText: string, authors: string[], hints: string[]) {
-  let hits = 0
-  for (const hint of hints) {
-    const key = normalizeLookupKey(hint)
-    if (!key) continue
-    if (authorText.includes(key)) {
-      hits += 1
-      continue
-    }
-    if (authors.some((author) => normalizeLookupKey(author).includes(key) || key.includes(normalizeLookupKey(author)))) {
-      hits += 1
-    }
-  }
-  return hits * 18
-}
-
-function tokenizeForSimilarity(text: string) {
-  return normalizeLookupText(text)
-    .toLowerCase()
-    .split(/[^a-z0-9\u3400-\u9fff]+/i)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 2)
 }
 
 function mergePublication(base: Publication, incoming: Publication, queryKey: string): Publication {
@@ -754,4 +901,33 @@ function makeStableId(source: string, value: string) {
 
 function compactCandidates(items: Array<LookupCandidate | null | undefined>) {
   return items.filter((item): item is LookupCandidate => Boolean(item))
+}
+
+function titleSimilarityScore(title: string, query: string) {
+  const titleKey = normalizeLookupKey(title)
+  const queryKey = normalizeLookupKey(query)
+  if (!titleKey || !queryKey) return 0
+
+  if (titleKey.includes(queryKey) || queryKey.includes(titleKey)) {
+    return Math.min(80, Math.max(titleKey.length, queryKey.length))
+  }
+
+  const titleTokens = tokenizeForSimilarity(title)
+  const queryTokens = tokenizeForSimilarity(query)
+  if (titleTokens.length === 0 || queryTokens.length === 0) return 0
+
+  const titleSet = new Set(titleTokens)
+  let hits = 0
+  for (const token of queryTokens) {
+    if (titleSet.has(token)) hits += 1
+  }
+  return Math.min(30, Math.round((hits / queryTokens.length) * 30))
+}
+
+function tokenizeForSimilarity(text: string) {
+  return normalizeLookupText(text)
+    .toLowerCase()
+    .split(/[^a-z0-9\u3400-\u9fff]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2)
 }

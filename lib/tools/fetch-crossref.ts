@@ -56,27 +56,39 @@ function fetchCrossrefJson(path: string) {
 }
 
 export interface CrossrefSearchOptions {
+  title?: string
   author?: string
+  authors?: string[]
+  bibliographic?: string
 }
 
 export async function searchCrossrefWorks(query: string, options: CrossrefSearchOptions = {}): Promise<CrossrefWork[]> {
-  const requests = [
-    fetchCrossrefJson(`/works?query.title=${encodeURIComponent(query)}&rows=5`),
-    fetchCrossrefJson(`/works?query.bibliographic=${encodeURIComponent(query)}&rows=5`),
-  ]
-  if (options.author?.trim()) {
-    requests.push(fetchCrossrefJson(`/works?query.author=${encodeURIComponent(options.author.trim())}&rows=5`))
+  const requests = new Map<string, Promise<Response>>()
+  const push = (path: string) => {
+    if (!requests.has(path)) {
+      requests.set(path, fetchCrossrefJson(path))
+    }
   }
 
-  const responses = await Promise.all(requests)
+  const title = options.title?.trim() || query.trim()
+  const bibliographic = options.bibliographic?.trim() || query.trim()
+  const author = options.author?.trim()
+  const authors = (options.authors ?? []).map((value) => value.trim()).filter(Boolean)
+
+  if (title) push(`/works?query.title=${encodeURIComponent(title)}&rows=5`)
+  if (bibliographic) push(`/works?query.bibliographic=${encodeURIComponent(bibliographic)}&rows=5`)
+  if (author) push(`/works?query.author=${encodeURIComponent(author)}&rows=5`)
+  for (const authorValue of authors) {
+    push(`/works?query.author=${encodeURIComponent(authorValue)}&rows=5`)
+  }
+
+  const responses = await Promise.all(requests.values())
 
   if (responses.every((response) => !response.ok)) {
     throw new Error(`Crossref error: ${responses.map((response) => response.status).join('/')}`)
   }
 
-  const datas = await Promise.all(
-    responses.map((response) => (response.ok ? response.json() : Promise.resolve({ message: { items: [] } }))),
-  )
+  const datas = await Promise.all(responses.map((response) => (response.ok ? response.json() : Promise.resolve({ message: { items: [] } }))))
 
   return mergeCrossrefItems(
     datas.flatMap((data) => data.message?.items ?? []),

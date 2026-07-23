@@ -27,6 +27,13 @@ export interface Member {
 
 export type PublicationType = 'conference' | 'journal' | 'preprint' | 'thesis' | 'book'
 
+export type PublicationLookupConditionType = 'title' | 'author' | 'doi'
+
+export interface PublicationLookupCondition {
+  type: PublicationLookupConditionType
+  value: string
+}
+
 export interface Publication {
   id: string
   title: string
