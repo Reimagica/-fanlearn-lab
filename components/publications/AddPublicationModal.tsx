@@ -377,10 +377,6 @@ export default function AddPublicationModal({ open, onClose }: Props) {
                     查询
                   </button>
                 </div>
-
-                <p className="mt-2 text-xs text-text-faint">
-                  你可以先填标题，再补作者或 DOI；多个条件会一起约束检索结果，更接近知网 / 万方那样的组合检索。若没有命中，再切换到「手动录入」
-                </p>
               </div>
             )}
 
