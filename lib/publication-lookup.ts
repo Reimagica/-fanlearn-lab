@@ -1,7 +1,13 @@
 import { searchCrossrefWorks, fetchCrossrefWorkByDoi, type CrossrefWork } from '@/lib/tools/fetch-crossref'
 import { searchDblp, type DBLPResult } from '@/lib/tools/fetch-dblp'
 import { fetchPaperByDoi, searchPaper, type SSPaper } from '@/lib/tools/fetch-semantic-scholar'
-import type { Publication, PublicationType } from '@/types'
+import type {
+  Publication,
+  PublicationLookupCandidate,
+  PublicationLookupField,
+  PublicationLookupSource,
+  PublicationType,
+} from '@/types'
 
 const RESULT_LIMIT = 5
 
@@ -18,9 +24,10 @@ export interface PublicationLookupInput {
   author?: string
 }
 
-export async function lookupPublicationMetadata(input: PublicationLookupInput): Promise<Publication[]> {
+export async function lookupPublicationMetadata(input: PublicationLookupInput): Promise<PublicationLookupCandidate[]> {
   const normalizedDoi = normalizeDoi(input.doi ?? '')
   const rawQuery = normalizeLookupText(input.query ?? input.doi ?? '')
+  const clues = parseLookupClues(rawQuery, input.author)
 
   if (!normalizedDoi && !rawQuery) {
     return []
@@ -37,13 +44,12 @@ export async function lookupPublicationMetadata(input: PublicationLookupInput): 
       crossrefPaper ? { paper: normalizeCrossrefWork(crossrefPaper), source: 'crossref' as const } : null,
     ])
 
-    const mergedExact = mergeCandidates(exactCandidates, rawQuery)
+    const mergedExact = mergeCandidates(exactCandidates, rawQuery, clues)
     if (mergedExact.length > 0) {
       return mergedExact.slice(0, RESULT_LIMIT)
     }
   }
 
-  const clues = parseLookupClues(rawQuery, input.author)
   const searchQueries = buildSearchQueries(clues)
   const allResults: LookupCandidate[] = []
 
@@ -56,11 +62,8 @@ export async function lookupPublicationMetadata(input: PublicationLookupInput): 
     allResults.push(...settled.flat())
   }
 
-  const ranked = mergeCandidates(allResults, clues.searchText || rawQuery)
-    .map((paper) => ({ paper, score: scorePublication(paper, clues) }))
-    .sort((a, b) => b.score - a.score)
-
-  return ranked.slice(0, RESULT_LIMIT).map((item) => item.paper)
+  return mergeCandidates(allResults, clues.searchText || rawQuery, clues)
+    .slice(0, RESULT_LIMIT)
 }
 
 function buildSearchQueries(clues: LookupClues) {
@@ -283,8 +286,12 @@ function firstNonEmpty(...values: Array<string | undefined>) {
   return values.map((value) => value?.trim()).find((value): value is string => Boolean(value))
 }
 
-function mergeCandidates(candidates: LookupCandidate[], query: string): Publication[] {
-  const merged: Publication[] = []
+function mergeCandidates(candidates: LookupCandidate[], query: string, clues: LookupClues): PublicationLookupCandidate[] {
+  const merged: Array<PublicationLookupCandidate & {
+    paper: Publication
+    source: PublicationLookupSource
+    score: number
+  }> = []
   const doiIndex = new Map<string, number>()
   const titleIndex = new Map<string, number>()
   const queryKey = normalizeLookupKey(query)
@@ -295,21 +302,45 @@ function mergeCandidates(candidates: LookupCandidate[], query: string): Publicat
     const titleKey = normalizeLookupKey(paper.title)
     const matchedIndex = (doiKey ? doiIndex.get(doiKey) : undefined)
       ?? titleIndex.get(titleKey)
+    const score = scorePublication(paper, clues)
+    const metadata = buildLookupCandidate(paper, candidate.source, clues, score)
 
     if (matchedIndex === undefined) {
       const nextIndex = merged.length
-      merged.push(paper)
+      merged.push({
+        ...metadata,
+        paper,
+        source: candidate.source,
+        score,
+      })
       if (doiKey) doiIndex.set(doiKey, nextIndex)
       titleIndex.set(titleKey, nextIndex)
       continue
     }
 
-    merged[matchedIndex] = mergePublication(merged[matchedIndex], paper, queryKey)
+    const existing = merged[matchedIndex]
+    const mergedPaper = mergePublication(existing.paper, paper, queryKey)
+    const mergedScore = Math.max(existing.score, score)
+    const preferredSource = score >= existing.score ? candidate.source : existing.source
+    merged[matchedIndex] = {
+      ...buildLookupCandidate(mergedPaper, preferredSource, clues, mergedScore),
+      paper: mergedPaper,
+      source: preferredSource,
+      score: mergedScore,
+    }
     if (doiKey) doiIndex.set(doiKey, matchedIndex)
     titleIndex.set(titleKey, matchedIndex)
   }
 
   return merged
+    .map(({ paper, source, confidence, matchedFields, missingFields }) => ({
+      paper,
+      source,
+      confidence,
+      matchedFields,
+      missingFields,
+    }))
+    .sort((a, b) => b.confidence - a.confidence)
 }
 
 function scorePublication(paper: Publication, clues: LookupClues) {
@@ -348,6 +379,68 @@ function scorePublication(paper: Publication, clues: LookupClues) {
   }
 
   return score
+}
+
+function buildLookupCandidate(
+  paper: Publication,
+  source: PublicationLookupSource,
+  clues: LookupClues,
+  score: number,
+): Omit<PublicationLookupCandidate, 'paper'> {
+  const matchedFields = new Set<PublicationLookupField>()
+  const targetTitle = normalizeLookupKey(clues.title ?? clues.searchText ?? clues.normalized)
+  const paperTitle = normalizeLookupKey(paper.title)
+  const authorHints = clues.authorHints.map((value) => normalizeLookupKey(value)).filter(Boolean)
+  const paperAuthors = paper.authors.map((value) => normalizeLookupKey(value))
+  const queryHasDoi = /\b10\.\d{4,9}\/[\w.()/:;-]+\b/i.test(clues.normalized) || /\bdoi\b/i.test(clues.normalized)
+
+  if (targetTitle && (paperTitle === targetTitle || paperTitle.includes(targetTitle) || targetTitle.includes(paperTitle) || titleSimilarityScore(paper.title, clues.title ?? clues.searchText ?? clues.normalized) > 0)) {
+    matchedFields.add('title')
+  }
+  if (authorHints.length > 0 && authorMatchScore(normalizeLookupKey(paper.authors.join(' ')), paper.authors, clues.authorHints) > 0) {
+    matchedFields.add('authors')
+  }
+  if (queryHasDoi && paper.doi) {
+    matchedFields.add('doi')
+  }
+  if (paper.venue && normalizeLookupKey(clues.searchText).includes(normalizeLookupKey(paper.venue))) {
+    matchedFields.add('venue')
+  }
+  if (paper.year && new RegExp(`\\b${paper.year}\\b`).test(clues.normalized)) {
+    matchedFields.add('year')
+  }
+
+  const missingFields: PublicationLookupField[] = []
+  if (!paper.doi) missingFields.push('doi')
+  if (!paper.venue) missingFields.push('venue')
+  if (!paper.abstract) missingFields.push('abstract')
+  if (!paper.pdfUrl) missingFields.push('pdfUrl')
+  if (!paper.sourceUrl) missingFields.push('sourceUrl')
+  if (paper.authors.length === 0) missingFields.push('authors')
+
+  return {
+    source,
+    confidence: normalizeConfidence(score, matchedFields, paper, clues, paperAuthors),
+    matchedFields: Array.from(matchedFields),
+    missingFields,
+  }
+}
+
+function normalizeConfidence(
+  score: number,
+  matchedFields: Set<PublicationLookupField>,
+  paper: Publication,
+  clues: LookupClues,
+  paperAuthors: string[],
+) {
+  let confidence = 0.15 + (score / 160)
+  if (matchedFields.has('doi')) confidence += 0.1
+  if (matchedFields.has('title')) confidence += 0.08
+  if (matchedFields.has('authors')) confidence += 0.06
+  if (paper.doi && clues.sourceHints.arxiv) confidence += 0.02
+  if (paperAuthors.length === 0) confidence -= 0.08
+  if (clues.hasChinese && containsCjk(paper.title)) confidence += 0.04
+  return Math.max(0.05, Math.min(0.99, Number(confidence.toFixed(2))))
 }
 
 function titleSimilarityScore(title: string, query: string) {

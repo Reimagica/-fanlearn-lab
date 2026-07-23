@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Search, X, Loader2, Check, FileText, ExternalLink, Plus, PenLine } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
 import { useLabData } from '@/lib/lab-data'
-import type { Publication, PublicationType } from '@/types'
+import type { Publication, PublicationLookupCandidate, PublicationType } from '@/types'
 
 interface Props {
   open: boolean
@@ -51,7 +51,7 @@ export default function AddPublicationModal({ open, onClose }: Props) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [results, setResults] = useState<Publication[]>([])
+  const [results, setResults] = useState<PublicationLookupCandidate[]>([])
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set())
   const [manual, setManual] = useState<ManualDraft>(EMPTY_MANUAL_DRAFT)
   const [manualSubmitted, setManualSubmitted] = useState(false)
@@ -88,8 +88,9 @@ export default function AddPublicationModal({ open, onClose }: Props) {
         throw new Error(data.error || '查询失败')
       }
       const data = await resp.json()
-      setResults(data.results ?? [])
-      if ((data.results ?? []).length === 0) {
+      const candidates = data.candidates ?? []
+      setResults(candidates)
+      if (candidates.length === 0) {
         setError('未找到匹配论文，可换关键词重试，或切换到“手动录入”')
       }
     } catch (e) {
@@ -237,7 +238,8 @@ export default function AddPublicationModal({ open, onClose }: Props) {
                 </div>
               )}
               <div className="space-y-3">
-                {results.map((paper) => {
+                {results.map((candidate) => {
+                  const { paper } = candidate
                   const added = addedIds.has(paper.id)
                   return (
                     <div
@@ -259,11 +261,29 @@ export default function AddPublicationModal({ open, onClose }: Props) {
                         {paper.citationCount > 0 && (
                           <span className="text-xs text-text-muted">{paper.citationCount} 引用</span>
                         )}
+                        <span className="rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-400">
+                          置信度 {(candidate.confidence * 100).toFixed(0)}%
+                        </span>
                       </div>
                       <h3 className="mb-1 text-sm font-medium leading-snug text-text-strong">
                         {paper.title}
                       </h3>
                       <p className="text-xs text-text-muted">{paper.authors.join(', ')}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                        {candidate.matchedFields.length > 0 && (
+                          <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-green-400">
+                            命中：{candidate.matchedFields.join('、')}
+                          </span>
+                        )}
+                        {candidate.missingFields.length > 0 && (
+                          <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-400">
+                            缺失：{candidate.missingFields.join('、')}
+                          </span>
+                        )}
+                        <span className="rounded-full bg-slate-500/10 px-2 py-0.5 text-text-faint">
+                          来源：{candidate.source === 'semantic_scholar' ? 'Semantic Scholar' : candidate.source === 'crossref' ? 'Crossref' : 'DBLP'}
+                        </span>
+                      </div>
                       {paper.doi && (
                         <p className="mt-1.5 text-xs text-text-faint">DOI: {paper.doi}</p>
                       )}

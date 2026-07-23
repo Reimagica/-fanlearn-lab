@@ -23,7 +23,7 @@ interface AuthContextValue {
   isGuest: boolean
 }
 
-const DEFAULT_ACCOUNTS: AccountRecord[] = [
+export const DEFAULT_ACCOUNTS: AccountRecord[] = [
   { username: 'fanyz', password: 'member123', name: '范逸洲', memberSlug: 'fan-yizhou', isAdmin: true },
   { username: 'xiamy', password: 'member123', name: '夏梦雨', memberSlug: 'xia-mengyu', isAdmin: false },
   { username: 'zhutl', password: 'member123', name: '朱桃林', memberSlug: 'zhu-taolin', isAdmin: false },

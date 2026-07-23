@@ -13,6 +13,9 @@ interface Draft {
   title: string
   summary: string
   content: string
+  factsUsed: string[]
+  riskFlags: string[]
+  needsReview: boolean
 }
 
 interface AttachmentDraft {
@@ -30,7 +33,7 @@ export default function NewNewsPage() {
   const [instructions, setInstructions] = useState('')
   const [referenceText, setReferenceText] = useState('')
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([])
-  const [draft, setDraft] = useState<Draft>({ title: '', summary: '', content: '' })
+  const [draft, setDraft] = useState<Draft>({ title: '', summary: '', content: '', factsUsed: [], riskFlags: [], needsReview: false })
   const [revisionRequest, setRevisionRequest] = useState('')
   const [loading, setLoading] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -78,7 +81,14 @@ export default function NewNewsPage() {
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'AI 生成失败')
-      setDraft({ title: data.title, summary: data.summary, content: data.content })
+      setDraft({
+        title: data.title,
+        summary: data.summary,
+        content: data.content,
+        factsUsed: data.factsUsed ?? [],
+        riskFlags: data.riskFlags ?? [],
+        needsReview: Boolean(data.needsReview),
+      })
       setRevisionRequest('')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'AI 生成失败')
@@ -102,6 +112,9 @@ export default function NewNewsPage() {
       eventDate,
       referenceLinks,
       attachments: attachments.map(({ name, type, size }) => ({ name, type, size })),
+      factsUsed: draft.factsUsed,
+      riskFlags: draft.riskFlags,
+      needsReview: draft.needsReview,
       status: 'pending_review',
       source: 'agent',
       createdAt: new Date().toISOString(),
@@ -138,6 +151,33 @@ export default function NewNewsPage() {
               <label className="block text-xs text-text-muted">标题<input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} className={`mt-1.5 ${inputClass}`} /></label>
               <label className="block text-xs text-text-muted">列表摘要<textarea value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} rows={2} className={`mt-1.5 resize-none ${inputClass}`} /></label>
               <label className="block text-xs text-text-muted">正文<textarea value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} rows={10} className={`mt-1.5 resize-y ${inputClass}`} /></label>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-xl bg-surface-2 p-4">
+                  <p className="text-xs font-medium text-text-muted">AI 使用的事实</p>
+                  {draft.factsUsed.length > 0 ? (
+                    <ul className="mt-2 space-y-1.5 text-xs text-text-muted">
+                      {draft.factsUsed.map((fact, index) => <li key={`${fact}-${index}`}>• {fact}</li>)}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-xs text-text-faint">暂无</p>
+                  )}
+                </div>
+                <div className="rounded-xl bg-surface-2 p-4">
+                  <p className="text-xs font-medium text-text-muted">风险提示</p>
+                  {draft.riskFlags.length > 0 ? (
+                    <ul className="mt-2 space-y-1.5 text-xs text-amber-400">
+                      {draft.riskFlags.map((flag, index) => <li key={`${flag}-${index}`}>• {flag}</li>)}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-xs text-green-400">未发现明显风险</p>
+                  )}
+                </div>
+              </div>
+              {draft.needsReview && (
+                <p className="rounded-xl bg-amber-500/10 px-4 py-3 text-xs text-amber-400">
+                  当前草稿仍有需要人工确认的地方，提交前建议再核对一次事实。
+                </p>
+              )}
               <div className="rounded-xl bg-surface-2 p-4"><label className="block text-xs text-text-muted">AI 修改意见<textarea value={revisionRequest} onChange={(event) => setRevisionRequest(event.target.value)} rows={2} placeholder="例：第二段更简洁，并强调对学习分析研究的意义" className={`mt-1.5 resize-none ${inputClass}`} /></label><button onClick={() => generate(true)} disabled={loading || !draft.content} className="mt-3 flex items-center gap-1.5 rounded-lg border border-indigo-500/30 px-3 py-2 text-xs text-indigo-400 hover:bg-indigo-500/10 disabled:opacity-40"><Sparkles size={13} /> 让 AI 按意见修改</button></div>
             </div>
           </section>

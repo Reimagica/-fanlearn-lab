@@ -13,6 +13,8 @@ type IntakeTool =
   | 'fetch_doi_metadata'
   | 'ask_user_clarification'
 
+type NewsDraftTool = never
+
 type ResearchTool = 'fetch_semantic_scholar' | 'fetch_dblp' | 'fetch_crossref'
 
 type QATool =
@@ -37,6 +39,7 @@ export const AGENT_TOOL_REGISTRY = {
     'fetch_doi_metadata',
     'ask_user_clarification',
   ] as const satisfies readonly IntakeTool[],
+  news_draft: [] as const satisfies readonly NewsDraftTool[],
   research: ['fetch_semantic_scholar', 'fetch_dblp', 'fetch_crossref'] as const satisfies readonly ResearchTool[],
   qa: ['search_lab_info', 'guide_publication_submission', 'guide_news_submission'] as const satisfies readonly QATool[],
   moderation: [
@@ -65,6 +68,7 @@ export interface AgentRuntimePolicy {
 export const AGENT_RUNTIME_POLICIES: Record<AgentName, AgentRuntimePolicy> = {
   orchestrator: { maxInputChars: 6_000, maxAttachments: 0, maxAttachmentChars: 0, maxSteps: 1, maxRetries: 1, timeoutMs: 15_000, canPublish: false, requiresHumanReview: true },
   intake: { maxInputChars: 55_000, maxAttachments: 5, maxAttachmentChars: 10_000, maxSteps: 1, maxRetries: 1, timeoutMs: 30_000, canPublish: false, requiresHumanReview: true },
+  news_draft: { maxInputChars: 55_000, maxAttachments: 5, maxAttachmentChars: 10_000, maxSteps: 1, maxRetries: 1, timeoutMs: 30_000, canPublish: false, requiresHumanReview: true },
   research: { maxInputChars: 8_000, maxAttachments: 0, maxAttachmentChars: 0, maxSteps: 2, maxRetries: 1, timeoutMs: 25_000, canPublish: false, requiresHumanReview: true },
   qa: { maxInputChars: 80_000, maxAttachments: 5, maxAttachmentChars: 12_000, maxSteps: 3, maxRetries: 1, timeoutMs: 35_000, canPublish: false, requiresHumanReview: true },
   moderation: { maxInputChars: 30_000, maxAttachments: 5, maxAttachmentChars: 10_000, maxSteps: 2, maxRetries: 1, timeoutMs: 30_000, canPublish: false, requiresHumanReview: true },

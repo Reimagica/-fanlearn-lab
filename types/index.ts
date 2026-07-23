@@ -54,6 +54,59 @@ export interface Publication {
 
 export type NewsCategory = 'paper' | 'academic' | 'member'
 
+export type PublicationLookupSource = 'semantic_scholar' | 'crossref' | 'dblp'
+
+export type PublicationLookupField =
+  | 'title'
+  | 'authors'
+  | 'doi'
+  | 'venue'
+  | 'year'
+  | 'abstract'
+  | 'pdfUrl'
+  | 'sourceUrl'
+
+export interface PublicationLookupCandidate {
+  paper: Publication
+  source: PublicationLookupSource
+  confidence: number
+  matchedFields: PublicationLookupField[]
+  missingFields: PublicationLookupField[]
+}
+
+export type ChatSourceKind = 'member' | 'publication' | 'news' | 'guide' | 'lab_info'
+
+export interface ChatSourceItem {
+  kind: ChatSourceKind
+  title: string
+  url?: string
+  slug?: string
+  excerpt?: string
+}
+
+export type ChatUncertaintyLevel = 'low' | 'medium' | 'high'
+
+export interface ChatUncertainty {
+  level: ChatUncertaintyLevel
+  notes: string[]
+}
+
+export interface ChatStructuredResponse {
+  answer: string
+  sources: ChatSourceItem[]
+  uncertainty: ChatUncertainty
+  nextStep: string
+}
+
+export interface NewsDraftStructuredResponse {
+  title: string
+  summary: string
+  content: string
+  factsUsed: string[]
+  riskFlags: string[]
+  needsReview: boolean
+}
+
 export interface NewsItem {
   id: string
   title: string
@@ -66,12 +119,15 @@ export interface NewsItem {
   eventDate: string
   referenceLinks?: string[]
   attachments?: Array<{ name: string; type: string; size: number }>
+  factsUsed?: string[]
+  riskFlags?: string[]
+  needsReview?: boolean
   status: 'published' | 'pending_review' | 'rejected'
   source: 'manual' | 'agent' | 'auto_crawler'
   createdAt: string
 }
 
-export type AgentType = 'orchestrator' | 'intake' | 'research' | 'moderation' | 'watchdog' | 'qa'
+export type AgentType = 'orchestrator' | 'intake' | 'news_draft' | 'research' | 'moderation' | 'watchdog' | 'qa'
 
 export interface AgentLog {
   id: string

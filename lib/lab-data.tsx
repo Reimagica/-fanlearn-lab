@@ -87,7 +87,7 @@ function migrateMember(member: Member): Member {
   }
 }
 
-function migrateNewsItem(item: NewsItem): NewsItem {
+export function migrateNewsItem(item: NewsItem): NewsItem {
   return {
     ...item,
     category: normalizeNewsCategory(item.category),
@@ -163,7 +163,7 @@ function normalizedTitle(title: string) {
   return title.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, '')
 }
 
-function isDuplicatePaper(paper: Publication, existing: Publication[]) {
+export function isDuplicatePaper(paper: Publication, existing: Publication[]) {
   const doi = paper.doi?.trim().toLowerCase()
   return existing.some((item) => {
     if (doi && item.doi?.trim().toLowerCase() === doi) return true
@@ -171,7 +171,7 @@ function isDuplicatePaper(paper: Publication, existing: Publication[]) {
   })
 }
 
-function createReview(
+export function createReview(
   contentType: ReviewQueueItem['contentType'],
   content: Publication | NewsItem,
   submitter: { slug: string; name: string },
